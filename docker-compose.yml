@@ -1,0 +1,76 @@
+version: '2.1'
+services:
+    redis:
+        image: 'redis:5.0.5'
+        # command: redis-server --requirepass redispass
+
+    mysql:
+      image: mysql:${MYSQL_VERSION}
+      container_name: airflow_mysql
+      restart: ${RESTART_POLICY}
+      env_file:
+        - mysql.env
+      volumes:
+        - ./mysql_data/:/var/lib/mysql
+      command: --explicit_defaults_for_timestamp
+
+    webserver:
+        image: ${AIRFLOW_IMAGE_NAME}:${AIRFLOW_IMAGE_VERSION}
+        restart: ${RESTART_POLICY}
+        depends_on:
+            - mysql
+            - redis
+        env_file:
+          - airflow.env
+          - mysql.env
+        volumes:
+            - ./dags:/usr/local/airflow/dags
+            # Uncomment to include custom plugins
+            # - ./plugins:/usr/local/airflow/plugins
+        ports:
+            - "8080:8080"
+        command: webserver
+        healthcheck:
+            test: ["CMD-SHELL", "[ -f /usr/local/airflow/airflow-webserver.pid ]"]
+            interval: 30s
+            timeout: 30s
+            retries: 3
+
+    flower:
+        image: ${AIRFLOW_IMAGE_NAME}:${AIRFLOW_IMAGE_VERSION}
+        restart: ${RESTART_POLICY}
+        depends_on:
+            - redis
+        env_file:
+          - airflow.env
+        ports:
+            - "5555:5555"
+        command: flower
+
+    scheduler:
+        image: ${AIRFLOW_IMAGE_NAME}:${AIRFLOW_IMAGE_VERSION}
+        restart: ${RESTART_POLICY}
+        depends_on:
+            - webserver
+        volumes:
+            - ./dags:/usr/local/airflow/dags
+            # Uncomment to include custom plugins
+            # - ./plugins:/usr/local/airflow/plugins
+        env_file:
+          - airflow.env
+          - mysql.env
+        command: scheduler
+
+    worker:
+        image: ${AIRFLOW_IMAGE_NAME}:${AIRFLOW_IMAGE_VERSION}
+        restart: ${RESTART_POLICY}
+        depends_on:
+            - scheduler
+        volumes:
+            - ./dags:/usr/local/airflow/dags
+            # Uncomment to include custom plugins
+            # - ./plugins:/usr/local/airflow/plugins
+        env_file:
+          - airflow.env
+          - mysql.env
+        command: worker
