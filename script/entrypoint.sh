@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -x
 
 # User-provided configuration must always be respected.
 #
@@ -11,6 +12,7 @@ TRY_LOOP="20"
 : "${AIRFLOW_HOME:="/usr/local/airflow"}"
 : "${AIRFLOW__CORE__FERNET_KEY:=${FERNET_KEY:=$(python -c "from cryptography.fernet import Fernet; FERNET_KEY = Fernet.generate_key().decode(); print(FERNET_KEY)")}}"
 : "${AIRFLOW__CORE__EXECUTOR:=${EXECUTOR:-Sequential}Executor}"
+: "${AIRFLOW_DATABASE_TYPE:=${AIRFLOW_DATABASE_TYPE:-postgres}}"
 
 # Load DAGs examples (default: Yes)
 if [[ -z "$AIRFLOW__CORE__LOAD_EXAMPLES" && "${LOAD_EX:=n}" == n ]]; then
@@ -45,7 +47,7 @@ wait_for_port() {
 # Other executors than SequentialExecutor drive the need for an SQL database, here PostgreSQL is used
 if [ "$AIRFLOW__CORE__EXECUTOR" != "SequentialExecutor" ]; then
   # Check if the user has provided explicit Airflow configuration concerning the database
-  if [ -z "$AIRFLOW__CORE__SQL_ALCHEMY_CONN" ]; then
+  if [ -z "$AIRFLOW__CORE__SQL_ALCHEMY_CONN" ] && [ "${AIRFLOW_DATABASE_TYPE}" = "postgres" ]; then
     # Default values corresponding to the default compose files
     : "${POSTGRES_HOST:="postgres"}"
     : "${POSTGRES_PORT:="5432"}"
@@ -62,6 +64,23 @@ if [ "$AIRFLOW__CORE__EXECUTOR" != "SequentialExecutor" ]; then
       AIRFLOW__CELERY__RESULT_BACKEND="db+postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}${POSTGRES_EXTRAS}"
       export AIRFLOW__CELERY__RESULT_BACKEND
     fi
+  elif [ -z "$AIRFLOW__CORE__SQL_ALCHEMY_CONN" ] && [ "${AIRFLOW_DATABASE_TYPE}" = "mysql" ]; then
+    # Default values corresponding to the default compose files
+    : "${MYSQL_HOST:="mysql"}"
+    : "${MYSQL_PORT:="3306"}"
+    : "${MYSQL_USER:="airflow"}"
+    : "${MYSQL_PASSWORD:="airflow"}"
+    : "${MYSQL_DATABASE:="airflow"}"
+    : "${MYSQL_EXTRAS:-""}"
+
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN="mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE}${MYSQL_EXTRAS}"
+    export AIRFLOW__CORE__SQL_ALCHEMY_CONN
+
+    # Check if the user has provided explicit Airflow configuration for the broker's connection to the database
+    if [ "$AIRFLOW__CORE__EXECUTOR" = "CeleryExecutor" ]; then
+      AIRFLOW__CELERY__RESULT_BACKEND="db+mysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE}${MYSQL_EXTRAS}"
+      export AIRFLOW__CELERY__RESULT_BACKEND
+    fi
   else
     if [[ "$AIRFLOW__CORE__EXECUTOR" == "CeleryExecutor" && -z "$AIRFLOW__CELERY__RESULT_BACKEND" ]]; then
       >&2 printf '%s\n' "FATAL: if you set AIRFLOW__CORE__SQL_ALCHEMY_CONN manually with CeleryExecutor you must also set AIRFLOW__CELERY__RESULT_BACKEND"
@@ -74,7 +93,11 @@ if [ "$AIRFLOW__CORE__EXECUTOR" != "SequentialExecutor" ]; then
     POSTGRES_PORT=$(echo -n "$POSTGRES_ENDPOINT" | cut -d ':' -f2)
   fi
 
-  wait_for_port "Postgres" "$POSTGRES_HOST" "$POSTGRES_PORT"
+  if [ "${AIRFLOW_DATABASE_TYPE}" = "postgres" ]; then
+    wait_for_port "Postgres" "$POSTGRES_HOST" "$POSTGRES_PORT"
+  elif [ "${AIRFLOW_DATABASE_TYPE}" = "mysql" ]; then
+    wait_for_port "MySQL" "$MYSQL_HOST" "$MYSQL_PORT"
+  fi
 fi
 
 # CeleryExecutor drives the need for a Celery broker, here Redis is used
@@ -109,7 +132,10 @@ fi
 
 case "$1" in
   webserver)
-    airflow initdb
+    if [ "${AIRFLOW_INIT_DB:-false}" = "true" ] && [ "${AIRFLOW_DB_INITIATED:-false}" = "false" ]; then
+        airflow initdb
+        export AIRFLOW_DB_INITIATED="true"
+    fi
     if [ "$AIRFLOW__CORE__EXECUTOR" = "LocalExecutor" ] || [ "$AIRFLOW__CORE__EXECUTOR" = "SequentialExecutor" ]; then
       # With the "Local" and "Sequential" executors it should all run in one container.
       airflow scheduler &
